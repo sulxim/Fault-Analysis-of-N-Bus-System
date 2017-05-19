@@ -1,0 +1,223 @@
+Matlab Code
+% Sulayman Dehlawi
+%EE 559 Final Project
+
+ 
+close all
+clear all
+ 
+alpha = exp(j*2*pi/3);
+A = [1 1 1; 1 alpha^2 alpha; 1 alpha alpha^2];
+ 
+ 
+%Need line parameters to build Y bus
+Vpf = 1.0;
+Zf = 0; %Fault Impedance;
+Ladm = [j*0.3, j*0.1, j*0.1]; %[z0, zPos, zNeg], Lines have similar Parameters
+%[From ,To, z0pu, zPospu, zNegpu Y/2pu]
+Lineparam = [1 2 Ladm 0;1 3 Ladm 0; 2 4 Ladm 0; 3 4 Ladm 0];
+%Can modify above parameters if lines have differing impeadance parameters
+ 
+%Row number is bus location, first column if gen exists at that bus
+%Second Column is whether generator is grounded
+Gens = [1 1;0 0;0 0;1 1]; %[if exists, if grounded]
+Genadm = [0.05, 0.2, 0.2]; %Generator admittances [z0, zPos, zNeg]
+Zn = 0; %neutral impeadance
+ 
+%Transformer Params, Row number is bus location
+%[if exists, if ground on bus side, if ground on non bus side] 
+Trans = [1 1 1; 0 0 0; 0 0 0; 1 1 0];
+Tadm = [0.05, 0.05, 0.05]; %[z0, zPos, zNeg]
+ 
+%%Build Ybuses  
+Ybus_z = zeros(size(Gens,1));
+Ybus_p = Ybus_z;
+Ybus_n= Ybus_z;
+ 
+%From Lines only
+for i=1:size(Lineparam,1)
+   From = Lineparam(i,1);
+   To = Lineparam(i,2);
+   
+   %Zero Seq
+   Ybus_z(From,To) = Ybus_z(From,To) - inv(Lineparam(i,3));
+   Ybus_z(To,From) = Ybus_z(From,To); %Making Ybus Symmetric
+   Ybus_z(To,To) = Ybus_z(To,To) + j*Lineparam(i,end); %Adding Line Capacitance
+   Ybus_z(From,From) = Ybus_z(From,From) + j*Lineparam(i,end); %On Both ends
+   
+   %Positive Seq
+   Ybus_p(From,To) = Ybus_p(From,To) - inv(Lineparam(i,4));
+   Ybus_p(To,From) = Ybus_p(From,To); 
+   Ybus_p(To,To) = Ybus_p(To,To) + j*Lineparam(i,end);
+   Ybus_p(From,From) = Ybus_p(From,From) + j*Lineparam(i,end);
+   
+   %Negative Seq
+   Ybus_n(From,To) = Ybus_n(From,To) - inv(Lineparam(i,5));
+   Ybus_n(To,From) = Ybus_n(From,To);
+   Ybus_n(To,To) = Ybus_n(To,To) + j*Lineparam(i,end); 
+   Ybus_n(From,From) = Ybus_n(From,From) + j*Lineparam(i,end);
+   
+end
+ 
+%Compute and add in diagonal values
+Ybus_z = Ybus_z -diag(sum(Ybus_z)); 
+Ybus_p = Ybus_p -diag(sum(Ybus_p));
+Ybus_n = Ybus_n -diag(sum(Ybus_n)); 
+ 
+ 
+%Add in Admittance from Generator Reactance and Transformers
+ 
+%Special Zero sequence calcs needed dependent on Transformers grounding
+for i = 1:size(Trans,1)
+    if(Trans(i,1:2)) %if there is xfrmr and grounded on bus side
+        if(Trans(i,3)) %if also grounded on non bus side
+            Ybus_z(i,i) = Ybus_z(i,i) + inv(j*(Genadm(1)+ Tadm(1))+3*Zn);
+        else
+            Ybus_z(i,i) = Ybus_z(i,i) + inv(j*(Tadm(1))); %Only xfrmr
+        end
+    end
+end
+ 
+Ybus_p = Ybus_p + inv(j*(Tadm(2)+Genadm(2)))*diag(Gens(:,1));
+ 
+Ybus_n = Ybus_n + inv(j*(Tadm(3)+Genadm(3)))*diag(Gens(:,1));
+ 
+Zbus_z = inv(Ybus_z);
+Zbus_p = inv(Ybus_p);
+Zbus_n = inv(Ybus_n);
+ 
+%%3 phase fault, only need to look at positive seq
+If3ph = zeros(1,length(Gens));
+V3ph = ones(length(Gens));
+V2 = zeros(size(V3ph));
+VarNames = cell(size(If3ph));
+VoltBusNames = cell(size(If3ph));
+for i=1:length(If3ph)
+    injI = zeros(length(Gens),1);
+    If = Vpf/Zbus_p(i,i);
+    If3ph(i) = If;
+    injI(i) = -If;
+    V2(i,:) = Zbus_p*injI;
+    VarNames{i} = ['FaultAtBus' num2str(i)];
+    VoltBusNames{i} = ['V_' num2str(i)];
+end
+ 
+V3ph = V3ph + V2;
+ 
+V3ph_T = array2table(V3ph,'VariableNames',VarNames,'RowNames',VoltBusNames);
+ 
+If3ph_T = array2table(If3ph,'VariableNames',VarNames,'RowNames',{'I_f'});
+ 
+ 
+%% SLG Faults
+%If_z = If_n = If_p All in series, If_a = If_z + If_n + If_p because of A
+%matrix
+IfSLG = zeros(3,length(Gens));
+VSLG = zeros(3*length(Gens),length(Gens));
+PhVoltBusNames = cell(size(VSLG,1),1);
+PhFaultNames = {'I_af' 'I_bf' 'I_cf'};
+ 
+ for i=1:length(Gens)
+    injI = zeros(length(Gens),1);
+    If_p = Vpf /(Zbus_z(i,i) + Zbus_p(i,i) + Zbus_n(i,i) + 3*Zf);
+    injI(i) = -If_p;
+    V_z = Zbus_z*injI;
+    V_p = ones(length(Gens),1)*Vpf + Zbus_p*injI;
+    V_n = Zbus_n*injI;
+    IfSLG(:,i) = A*[If_p;If_p;If_p];
+    for l = 3:3:length(VSLG)
+        VSLG(l-2:l,i) = A*[V_z(l/3);V_p(l/3);V_n(l/3)];
+        PhVoltBusNames{l-2} = ['V' num2str(l/3) '_a'];
+        PhVoltBusNames{l-1} = ['V' num2str(l/3) '_b'];
+        PhVoltBusNames{l} = ['V' num2str(l/3) '_c'];
+    
+    end
+ end
+ 
+ VSLG_T = array2table(VSLG,'VariableNames',VarNames,'RowNames',PhVoltBusNames);
+ IfSLG_T = array2table(IfSLG,'VariableNames',VarNames,'RowNames',PhFaultNames );
+ 
+%% LL Faults
+%If_p = -If_n, If_z = 0, Vf_p = Vf_n, parallel networks
+ 
+IfLL = zeros(3,length(Gens));
+VLL = zeros(3*length(Gens),length(Gens));
+% PhVoltBusNames = cell(size(VSLG,1),1);
+% PhFaultNames = {'I_af' 'I_bf' 'I_cf'};
+ 
+ for i=1:length(Gens)
+    injI = zeros(length(Gens),1);
+    If_p = Vpf /(Zbus_p(i,i) + Zbus_n(i,i));
+    injI(i) = -If_p;
+    V_z = Zbus_z*injI*0;
+    V_p = ones(length(Gens),1)*Vpf + Zbus_p*injI;
+    V_n = Zbus_n*-1*injI;
+    IfLL(:,i) = A*[0;If_p;-If_p];
+    for l = 3:3:length(VLL)
+        VLL(l-2:l,i) = A*[V_z(l/3);V_p(l/3);V_n(l/3)]; 
+    end
+ end
+ 
+  VLL_T = array2table(VLL,'VariableNames',VarNames,'RowNames',PhVoltBusNames);
+ IfLL_T = array2table(IfLL,'VariableNames',VarNames,'RowNames',PhFaultNames );
+ 
+ %% DLG Faults
+%If_z = -If_p - If_n, Vf_p = Vf_n, parallel networks of everything
+%V_z - V_p = 3Zf*If_z
+ 
+IfDLG = zeros(3,length(Gens));
+VDLG = zeros(3*length(Gens),length(Gens));
+ 
+ for i=1:length(Gens)
+    injI = zeros(length(Gens),1);
+    If_p = Vpf /(Zbus_p(i,i) + (Zbus_n(i,i)*(Zbus_z(i,i) + 3*Zf)/...
+        (Zbus_n(i,i)+(Zbus_z(i,i) + 3*Zf))));
+    injI(i) = -If_p;
+    V_p = ones(length(Gens),1)*Vpf + Zbus_p*injI;
+    If_n = -V_p(i)/Zbus_n(i,i);
+    If_z = -If_p - If_n;
+    
+    injI = injI*0; %Reset injection
+    injI(i) = -If_n;
+    V_n = Zbus_n*injI;
+    
+    injI = injI*0; %Reset injection
+    injI(i) = -If_z;
+    V_z = Zbus_z*injI;
+    IfDLG(:,i) = A*[If_z;If_p;If_n];
+    for l = 3:3:length(VDLG)
+        VDLG(l-2:l,i) = A*[V_z(l/3);V_p(l/3);V_n(l/3)]; 
+    end
+ end
+ 
+ VDLG_T = array2table(VDLG,'VariableNames',VarNames,'RowNames',PhVoltBusNames);
+ IfDLG_T = array2table(IfDLG,'VariableNames',VarNames,'RowNames',PhFaultNames );
+ 
+ %%Write Tables into txts files, then manually imported into xls for Report
+ 
+ %Ybuses and Zbuses
+ xlswrite('Ybuses',imag(Ybus_z),'Ybusz')
+ xlswrite('Ybuses',imag(Ybus_p),'Ybusp')
+ xlswrite('Ybuses',imag(Ybus_n),'Ybusn')
+ 
+ xlswrite('Zbuses',imag(Zbus_z),'Zbusz')
+ xlswrite('Zbuses',imag(Zbus_p),'Zbusp')
+ xlswrite('Zbuses',imag(Zbus_n),'Zbusn')
+ 
+ 
+ %3ph
+ writetable(V3ph_T,'V3ph.txt','WriteRowNames',1,'Delimiter','tab')
+ writetable(If3ph_T,'If3ph.txt','WriteRowNames',1,'Delimiter','tab')
+ 
+ %SLG
+ writetable(VSLG_T,'VSLG.txt','WriteRowNames',1,'Delimiter','tab')
+ writetable(IfSLG_T,'IfSLG.txt','WriteRowNames',1,'Delimiter','tab')
+ 
+ %LL
+ writetable(VLL_T,'VLL.txt','WriteRowNames',1,'Delimiter','tab')
+ writetable(IfLL_T,'IfLL.txt','WriteRowNames',1,'Delimiter','tab')
+ 
+ %DLG
+ writetable(VDLG_T,'VDLG.txt','WriteRowNames',1,'Delimiter','tab')
+ writetable(IfDLG_T,'IfDLG.txt','WriteRowNames',1,'Delimiter','tab')
+
